@@ -40,6 +40,13 @@ Many of these design decisions are inapplicable to deployed desktop software; in
 Datomish is designed for embedding, initially in an Electron app ([Tofino](https://github.com/mozilla/tofino)). It is less concerned with exposing consistent database states outside transaction boundaries, because that's less important here, and dropping some of these requirements allows us to leverage SQLite itself.
 
 
+## Comparison to SQLite
+
+SQLite is a traditional SQL database in most respects: schemas conflate semantic, structural, and datatype concerns; the main interface with the database is human-first textual queries; sparse and graph-structured data are 'unnatural', if not always inefficient; experimenting with and evolving data models are error-prone and complicated activities; and so on.
+
+Datomish aims to offer many of the advantages of SQLite — single-file use, embeddability, and good performance — while building a more relaxed and expressive data model on top.
+
+
 ## Contributing
 
 Please note that this project is released with a Contributor Code of Conduct.
@@ -55,3 +62,89 @@ contribute.
 ## License
 
 At present this code is licensed under MPLv2.0. That license is subject to change prior to external contributions.
+
+## Running a REPL
+
+### Prep
+
+You'll need [Leiningen](http://leiningen.org).
+
+```
+# If you use nvm.
+nvm use 6
+
+lein deps
+npm install
+
+# If you want a decent REPL.
+brew install rlwrap
+```
+
+Run `lein cljsbuild auto advanced` to generate JavaScript into `target/`.
+
+### Starting a ClojureScript REPL from the terminal
+
+```
+rlwrap lein run -m clojure.main repl.clj
+```
+
+### Connecting to a ClojureScript environment from Vim
+
+You'll need `vim-fireplace`. Install using Pathogen.
+
+First, start a Clojure REPL with an nREPL server. Then load our ClojureScript REPL and dependencies. Finally, connect to it from Vim.
+
+```
+$ lein repl
+nREPL server started on port 62385 on host 127.0.0.1 - nrepl://127.0.0.1:62385
+REPL-y 0.3.7, nREPL 0.2.10
+Clojure 1.8.0
+Java HotSpot(TM) 64-Bit Server VM 1.8.0_60-b27
+    Docs: (doc function-name-here)
+          (find-doc "part-of-name-here")
+  Source: (source function-name-here)
+ Javadoc: (javadoc java-object-or-class-here)
+    Exit: Control+D or (exit) or (quit)
+ Results: Stored in vars *1, *2, *3, an exception in *e
+
+user=> (load-file "repl.clj")
+Reading analysis cache for jar:file:/Users/rnewman/.m2/repository/org/clojure/clojurescript/1.9.89/clojurescript-1.9.89.jar!/cljs/core.cljs
+Compiling out/cljs/nodejs.cljs
+Compiling src/datomish/sqlite.cljs
+Compiling src/datomish/core.cljs
+ClojureScript Node.js REPL server listening on 57134
+Watch compilation log available at: out/watch.log
+To quit, type: :cljs/quit
+cljs.user=>
+```
+
+in Vim, in the working directory:
+
+```
+:Piggieback (cljs.repl.node/repl-env)
+```
+
+Now you can use `:Eval`, `cqc`, and friends to evaluate code. Fireplace should connect automatically, but if it doesn't:
+
+```
+:Connect nrepl://localhost:62385
+```
+
+## To run the ClojureScript tests
+
+Run `lein doo node test once`, or `lein doo node` to re-run on file changes.
+
+### Preparing an NPM release
+
+The intention is that the `release-js/` directory is roughly the shape of an npm-ready JavaScript package.
+
+To generate a require/import-ready `release-js/datomish.js`, run
+```
+lein cljsbuild once release
+```
+To verify that importing into Node.js succeeds, run
+```
+node release-js/test
+```
+
+Many thanks to ([David Nolen](https://github.com/swannodette)) and ([Nikita Prokopov](https://github.com/tonsky)) for demonstrating how to package ClojureScript for distribution via npm.
