@@ -47,8 +47,22 @@
   ;; TODO: schema lookup.
   true)
 
+(defn bind-coll->binding-vars [bind-coll]
+  (:bindings (:binding bind-coll)))
+
+(defn binding-placeholder-or-variable? [binding]
+  (or
+    ;; It's a placeholder...
+    (instance? BindIgnore binding)
+
+    ;; ... or it's a scalar binding to a variable.
+    (and
+      (instance? BindScalar binding)
+      (instance? Variable (:variable binding)))))
+
 (defn- validate-fulltext-clause [cc function]
-  (let [[src attr search] (:args function)]
+  (let [bind-coll (:binding function)
+        [src attr search] (:args function)]
     (when-not (and (instance? SrcVar src)
                    (= "$" (name (:symbol src))))
       (raise "Non-default sources not supported." {:arg src}))
@@ -58,14 +72,12 @@
     (when-not (fulltext-attribute? (:source cc) (:value attr))
       (raise-str "Attribute " (:value attr) " is not a fulltext-indexed attribute."))
 
-    (when-not (and (instance? BindColl (:binding function))
-                   (instance? BindTuple (:binding (:binding function)))
-                   (every? (fn [s]
-                             (or (instance? BindIgnore s)
-                                 (and (instance? BindScalar s)
-                                      (instance? Variable (:variable s)))))
-                           (:bindings (:binding (:binding function)))))
-      (raise "Unexpected binding value." {:binding (:binding function)}))))
+    (when-not (and (instance? BindColl bind-coll)
+                   (instance? BindTuple (:binding bind-coll))
+                   (every? binding-placeholder-or-variable?
+                           (bind-coll->binding-vars bind-coll)))
+
+      (raise "Unexpected binding value." {:binding bind-coll}))))
 
 (defn apply-fulltext-clause [cc function]
   (validate-fulltext-clause cc function)
