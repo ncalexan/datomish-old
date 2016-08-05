@@ -35,8 +35,8 @@
 (defprotocol Source
   (source->from [source attribute]
     "Returns a pair, `[table alias]` for a pattern with the provided attribute.")
-  (source->non-fts-from [source])
-  (source->fts-from [source]
+  (source->non-fulltext-from [source])
+  (source->fulltext-from [source]
     "Returns a pair, `[table alias]` for querying the source's fulltext index.")
   (source->constraints [source alias])
   (attribute-in-source [source attribute])
@@ -45,8 +45,8 @@
 (defrecord
   DatomsSource
   [table               ; Typically :datoms.
-   fts-table           ; Typically :fulltext_values
-   fts-view            ; Typically :fulltext_datoms.
+   fulltext-table           ; Typically :fulltext_values
+   fulltext-view            ; Typically :fulltext_datoms.
    columns             ; e.g., [:e :a :v :tx]
 
    ;; `attribute-transform` is a function from attribute to constant value. Used to
@@ -73,15 +73,15 @@
             (:table source)
 
             ;; It's variable. We must act as if it could be a fulltext datom.
-            (:fts-view source))]
+            (:fulltext-view source))]
       [table ((:table-alias source) table)]))
 
-  (source->non-fts-from [source]
+  (source->non-fulltext-from [source]
     (let [table (:table source)]
       [table ((:table-alias source) table)]))
 
-  (source->fts-from [source]
-    (let [table (:fts-table source)]
+  (source->fulltext-from [source]
+    (let [table (:fulltext-table source)]
       [table ((:table-alias source) table)]))
 
   (source->constraints [source alias]
@@ -97,8 +97,8 @@
 (defn datoms-source [db]
   (map->DatomsSource
     {:table :datoms
-     :fts-table :fulltext_values
-     :fts-view :fulltext_datoms
+     :fulltext-table :fulltext_values
+     :fulltext-view :fulltext_datoms
      :columns [:e :a :v :tx :added]
      :attribute-transform transforms/attribute-transform-string
      :constant-transform transforms/constant-transform-default

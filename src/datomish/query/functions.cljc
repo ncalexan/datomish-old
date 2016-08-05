@@ -85,22 +85,22 @@
         ;; Find the FTS table name and alias. We might have multiple fulltext
         ;; expressions so we will generate a query like
         ;;   SELECT ttt.a FROM t1 AS ttt WHERE ttt.t1 MATCH 'string'
-        [fts-table fts-alias] (source/source->fts-from (:source cc))   ; [:t1 :ttt]
-        match-column (sql/qualify fts-alias fts-table)          ; :ttt.t1
+        [fulltext-table fulltext-alias] (source/source->fulltext-from (:source cc))   ; [:t1 :ttt]
+        match-column (sql/qualify fulltext-alias fulltext-table)                      ; :ttt.t1
         match-value (cc/argument->value cc search)
 
-        [datom-table datom-alias] (source/source->non-fts-from (:source cc))
+        [datom-table datom-alias] (source/source->non-fulltext-from (:source cc))
 
         ;; The following will end up being added to the CC.
-        from [[fts-table fts-alias]
+        from [[fulltext-table fulltext-alias]
               [datom-table datom-alias]]
 
         wheres [[:match match-column match-value]      ; The FTS match.
 
-                ;; The FTS rowid to datom correspondence.
+                ;; The fulltext rowid-to-datom correspondence.
                 [:=
                  (sql/qualify datom-alias :v)
-                 (sql/qualify fts-alias :rowid)]
+                 (sql/qualify fulltext-alias :rowid)]
 
                 ;; The attribute itself must match.
                 [:=
