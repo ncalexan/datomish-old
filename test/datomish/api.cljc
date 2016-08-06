@@ -42,3 +42,5 @@
 (def entid db/entid)
 
 (def ident db/ident)
+
+(def <q db/<?q)
