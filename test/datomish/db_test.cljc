@@ -14,7 +14,6 @@
    [datomish.sqlite :as s]
    [datomish.sqlite-schema]
    [datomish.datom]
-   [datomish.db :as db]
    #?@(:clj [[datomish.pair-chan :refer [go-pair <?]]
              [tempfile.core :refer [tempfile with-tempfile]]
              [datomish.test-macros :refer [deftest-async]]
@@ -37,35 +36,32 @@
   (into {} (map (juxt (comp :idx first) second) (:tempids tx))))
 
 (defn- <datoms-after [db tx]
-  (let [entids (zipmap (vals (db/idents db)) (keys (db/idents db)))]
-    (go-pair
-      (->>
-        (s/all-rows (:sqlite-connection db) ["SELECT e, a, v, tx FROM datoms WHERE tx > ?" tx])
-        (<?)
-        (mapv #(vector (:e %) (get entids (:a %) (str "fail" (:a %))) (:v %)))
-        (filter #(not (= :db/txInstant (second %))))
-        (set)))))
+  (go-pair
+    (->>
+      (s/all-rows (:sqlite-connection db) ["SELECT e, a, v, tx FROM datoms WHERE tx > ?" tx])
+      (<?)
+      (mapv #(vector (:e %) (d/ident db (:a %)) (:v %)))
+      (filter #(not (= :db/txInstant (second %))))
+      (set))))
 
 (defn- <datoms [db]
   (<datoms-after db 0))
 
 (defn- <shallow-entity [db eid]
   ;; TODO: make this actually be <entity.  Handle :db.cardinality/many and :db/isComponent.
-  (let [entids (zipmap (vals (db/idents db)) (keys (db/idents db)))]
-    (go-pair
-      (->>
-        (s/all-rows (:sqlite-connection db) ["SELECT a, v FROM datoms WHERE e = ?" eid])
-        (<?)
-        (mapv #(vector (entids (:a %)) (:v %)))
-        (reduce conj {})))))
+  (go-pair
+    (->>
+      (s/all-rows (:sqlite-connection db) ["SELECT a, v FROM datoms WHERE e = ?" eid])
+      (<?)
+      (mapv #(vector (d/ident db (:a %)) (:v %)))
+      (reduce conj {}))))
 
 (defn- <transactions-after [db tx]
-  (let [entids (zipmap (vals (db/idents db)) (keys (db/idents db)))]
-    (go-pair
-      (->>
-        (s/all-rows (:sqlite-connection db) ["SELECT e, a, v, tx, added FROM transactions WHERE tx > ? ORDER BY tx ASC, e, a, v, added" tx])
-        (<?)
-        (mapv #(vector (:e %) (entids (:a %)) (:v %) (:tx %) (:added %)))))))
+  (go-pair
+    (->>
+      (s/all-rows (:sqlite-connection db) ["SELECT e, a, v, tx, added FROM transactions WHERE tx > ? ORDER BY tx ASC, e, a, v, added" tx])
+      (<?)
+      (mapv #(vector (:e %) (d/ident db (:a %)) (:v %) (:tx %) (:added %))))))
 
 (defn- <transactions [db]
   (<transactions-after db 0))
@@ -77,47 +73,46 @@
       (<?)
       (mapv #(vector (:rowid %) (:text %))))))
 
-;; TODO: use reverse refs!
 (def test-schema
-  [{:db/id        (d/id-literal :test -1)
+  [{:db/id        (d/id-literal :db.part/user)
     :db/ident     :x
     :db/unique    :db.unique/identity
-    :db/valueType :db.type/integer}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -1)}
-   {:db/id        (d/id-literal :test -2)
+    :db/valueType :db.type/long
+    :db.install/_attribute :db.part/db}
+   {:db/id        (d/id-literal :db.part/user)
     :db/ident     :name
     :db/unique    :db.unique/identity
-    :db/valueType :db.type/string}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -2)}
-   {:db/id          (d/id-literal :test -3)
+    :db/valueType :db.type/string
+    :db.install/_attribute :db.part/db}
+   {:db/id          (d/id-literal :db.part/user)
     :db/ident       :y
     :db/cardinality :db.cardinality/many
-    :db/valueType   :db.type/integer}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -3)}
-   {:db/id          (d/id-literal :test -5)
+    :db/valueType   :db.type/long
+    :db.install/_attribute :db.part/db}
+   {:db/id          (d/id-literal :db.part/user)
     :db/ident       :aka
     :db/cardinality :db.cardinality/many
-    :db/valueType   :db.type/string}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -5)}
-   {:db/id        (d/id-literal :test -6)
+    :db/valueType   :db.type/string
+    :db.install/_attribute :db.part/db}
+   {:db/id        (d/id-literal :db.part/user)
     :db/ident     :age
-    :db/valueType :db.type/integer}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -6)}
-   {:db/id        (d/id-literal :test -7)
+    :db/valueType :db.type/long
+    :db.install/_attribute :db.part/db}
+   {:db/id        (d/id-literal :db.part/user)
     :db/ident     :email
     :db/unique    :db.unique/identity
-    :db/valueType :db.type/string}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -7)}
-   {:db/id        (d/id-literal :test -8)
+    :db/valueType :db.type/string
+    :db.install/_attribute :db.part/db}
+   {:db/id        (d/id-literal :db.part/user)
     :db/ident     :spouse
     :db/unique    :db.unique/value
-    :db/valueType :db.type/string}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -8)}
-   {:db/id          (d/id-literal :test -9)
+    :db/valueType :db.type/string
+    :db.install/_attribute :db.part/db}
+   {:db/id          (d/id-literal :db.part/user)
     :db/ident       :friends
     :db/cardinality :db.cardinality/many
-    :db/valueType   :db.type/ref}
-   {:db/id :db.part/db :db.install/attribute (d/id-literal :test -9)}
+    :db/valueType   :db.type/ref
+    :db.install/_attribute :db.part/db}
    ])
 
 (deftest-async test-add-one
@@ -381,10 +376,12 @@
   (with-tempfile [t (tempfile)]
     (let [conn (<? (d/<connect t))]
       (try
+        (is (= :test/ident (d/entid (d/db conn) :test/ident)))
+
         (let [report   (<? (d/<transact! conn [[:db/add (d/id-literal :db.part/db -1) :db/ident :test/ident]]))
-              db-after (:db-after report)
-              tx       (:tx db-after)]
-          (is (= (:test/ident (db/idents db-after)) (get-in report [:tempids (d/id-literal :db.part/db -1)]))))
+              eid      (get-in report [:tempids (d/id-literal :db.part/db -1)])]
+          (is (= eid (d/entid (d/db conn) :test/ident)))
+          (is (= :test/ident (d/ident (d/db conn) eid))))
 
         ;; TODO: This should fail, but doesn't, due to stringification of :test/ident.
         ;; (is (thrown-with-msg?
@@ -417,7 +414,7 @@
               tx       (:tx db-after)]
 
           (testing "New ident is allocated"
-            (is (some? (get-in db-after [:idents :test/attr]))))
+            (is (some? (d/entid db-after :test/attr))))
 
           (testing "Schema is modified"
             (is (= (get-in db-after [:symbolic-schema :test/attr])
@@ -629,6 +626,66 @@
           (is (thrown-with-msg?
                 ExceptionInfo #"\{:db/valueType :db.type/ref\}"
                 (<? (d/<transact! conn [{:db/id 101 :_aka 102}])))))
+
+        (finally
+          (<? (d/<close conn)))))))
+
+(deftest-async test-next-eid
+  (with-tempfile [t (tempfile)]
+    (let [conn      (<? (d/<connect t))
+          {tx0 :tx} (<? (d/<transact! conn test-schema))]
+      (testing "entids are increasing, tx ids are larger than user ids"
+        (let [r1 (<? (d/<transact! conn [{:db/id (d/id-literal :db.part/user -1) :name "Igor"}]))
+              r2 (<? (d/<transact! conn [{:db/id (d/id-literal :db.part/user -2) :name "Oleg"}]))
+              e1 (get (tempids r1) -1)
+              e2 (get (tempids r2) -2)]
+          (is (< e1 (:tx r1)))
+          (is (< e2 (:tx r2)))
+          (is (< e1 e2))
+          (is (< (:tx r1) (:tx r2)))
+
+          ;; Close and re-open same DB.
+          (<? (d/<close conn))
+          (let [conn (<? (d/<connect t))]
+            (try
+              (testing "entid counters are persisted across re-opens"
+                (let [r3 (<? (d/<transact! conn [{:db/id (d/id-literal :db.part/user -3) :name "Petr"}]))
+                      e3 (get (tempids r3) -3)]
+                  (is (< e3 (:tx r3)))
+                  (is (< e2 e3))
+                  (is (< (:tx r2) (:tx r3)))))
+
+              (finally
+                (<? (d/<close conn))))))))))
+
+(deftest-async test-unique-value
+  (with-tempfile [t (tempfile)]
+    (let [conn (<? (d/<connect t))]
+      (try
+        (let [tx0 (:tx (<? (d/<transact! conn [{:db/id                 (d/id-literal :db.part/user -1)
+                                                :db/ident              :test/x
+                                                :db/unique             :db.unique/value
+                                                :db/valueType          :db.type/long
+                                                :db.install/_attribute :db.part/db}
+                                               {:db/id                 (d/id-literal :db.part/user -2)
+                                                :db/ident              :test/y
+                                                :db/unique             :db.unique/value
+                                                :db/valueType          :db.type/long
+                                                :db.install/_attribute :db.part/db}])))]
+
+          (testing "can insert different :db.unique/value attributes with the same value"
+            (let [report1 (<? (d/<transact! conn [[:db/add (d/id-literal :db.part/user -1) :test/x 12345]]))
+                  eid1    (get-in report1 [:tempids (d/id-literal :db.part/user -1)])
+                  report2 (<? (d/<transact! conn [[:db/add (d/id-literal :db.part/user -2) :test/y 12345]]))
+                  eid2    (get-in report2 [:tempids (d/id-literal :db.part/user -2)])]
+              (is (= (<? (<datoms-after (d/db conn) tx0))
+                     #{[eid1 :test/x 12345]
+                       [eid2 :test/y 12345]}))))
+
+          (testing "can't upsert a :db.unique/value field"
+            (is (thrown-with-msg?
+                  ExceptionInfo #"because of unique constraint"
+                  (<? (d/<transact! conn [{:db/id (d/id-literal :db.part/user -1) :test/x 12345 :test/y 99999}]))))))
 
         (finally
           (<? (d/<close conn)))))))
