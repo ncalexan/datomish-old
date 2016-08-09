@@ -8,6 +8,7 @@
       [datomish.pair-chan :refer [go-pair <?]]
       [cljs.core.async.macros :refer [go]]))
   (:require
+   [clojure.set]
    [datomish.query.context :as context]
    [datomish.query.projection :as projection]
    [datomish.query.source :as source]
@@ -15,9 +16,9 @@
    [datomish.datom :as dd :refer [datom datom? #?@(:cljs [Datom])]]
    [datomish.util :as util #?(:cljs :refer-macros :clj :refer) [raise raise-str cond-let]]
    [datomish.schema :as ds]
-   [datomish.schema-changes]
    [datomish.sqlite :as s]
    [datomish.sqlite-schema :as sqlite-schema]
+   [taoensso.tufte :as tufte :refer (defnp p profiled profile)]
    #?@(:clj [[datomish.pair-chan :refer [go-pair <?]]
              [clojure.core.async :as a :refer [chan go <! >!]]])
    #?@(:cljs [[datomish.pair-chan]
@@ -74,13 +75,13 @@
     [db]
     "Return the schema of this database.")
 
-  (idents
-    [db]
-    "Return the known idents of this database, as a map from keyword idents to entids.")
+  (entid
+    [db ident]
+    "Returns the entity id associated with a symbolic keyword, or the id itself if passed.")
 
-  (current-tx
-    [db]
-    "TODO: document this interface.")
+  (ident
+    [db eid]
+    "Returns the keyword associated with an id, or the key itself if passed.")
 
   (in-transaction!
     [db chan-fn]
@@ -88,29 +89,29 @@
     commit the transaction; otherwise, rollback the transaction.  Returns a pair-chan resolving to
     the pair-chan returned by `chan-fn`.")
 
-  (<eavt
-    [db pattern]
-    "Search for datoms using the EAVT index.")
+  (<bootstrapped? [db]
+    "Return true if this database has no transactions yet committed.")
 
-  (<avet
-    [db pattern]
+  (<av
+    [db a v]
     "Search for datoms using the AVET index.")
 
-  (<apply-datoms
-    [db datoms]
-    "Apply datoms to the store.")
+  (<apply-entities
+    [db tx entities]
+    "Apply entities to the store, returning sequence of datoms transacted.")
 
   (<apply-db-ident-assertions
-    [db added-idents]
-    "Apply added idents to the store.")
+    [db added-idents merge]
+    "Apply added idents to the store, using `merge` as a `merge-with` function.")
 
   (<apply-db-install-assertions
-    [db fragment]
-    "Apply added schema fragment to the store.")
+    [db fragment merge]
+    "Apply added schema fragment to the store, using `merge` as a `merge-with` function.")
 
-  (<advance-tx
-    [db]
-    "TODO: document this interface."))
+  (<next-eid
+    [db id-literal]
+    "Return a unique integer for the given id-literal, accounting for the literal's partition.  The
+    returned integer should never be returned again."))
 
 (defn db? [x]
   (and (satisfies? IDB x)
@@ -140,117 +141,248 @@
           ]
       rowid)))
 
-(defrecord DB [sqlite-connection schema idents current-tx]
-  ;; idents is map {ident -> entid} of known idents.  See http://docs.datomic.com/identity.html#idents.
+(defn datoms-attribute-transform
+  [db x]
+  {:pre [(db? db)]}
+  (entid db x))
+
+(defn datoms-constant-transform
+  [db x]
+  {:pre [(db? db)]}
+  (sqlite-schema/->SQLite x))
+
+(defn datoms-source [db]
+  (source/map->DatomsSource
+    {:table :datoms
+     :fulltext-table :fulltext_values
+     :fulltext-view :all_datoms
+     :columns [:e :a :v :tx :added]
+     :attribute-transform (partial datoms-attribute-transform db)
+     :constant-transform (partial datoms-constant-transform db)
+     :table-alias source/gensym-table-alias
+     :make-constraints nil}))
+
+(defrecord DB [sqlite-connection schema ident-map]
+  ;; ident-map maps between keyword idents and integer entids.  The set of idents and entids is
+  ;; disjoint, so we represent both directions of the mapping in the same map for simplicity.  Also
+  ;; for simplicity, we assume that an entid has at most one associated ident, and vice-versa.  See
+  ;; http://docs.datomic.com/identity.html#idents.
+
+  ;; TODO: cache parts.  parts looks like {:db.part/db {:start 0 :current 10}}.  It maps between
+  ;; keyword ident part names and integer ranges.
   IDB
-  (query-context [db] (context/->Context (source/datoms-source db) nil nil))
+  (query-context [db] (context/->Context (datoms-source db) nil nil))
 
   (schema [db] (.-schema db))
 
-  (idents [db] (.-idents db))
+  (entid [db ident]
+    (if (keyword? ident)
+      (get (.-ident-map db) ident ident)
+      ident))
 
-  (current-tx
-    [db]
-    (inc (:current-tx db)))
+  (ident [db eid]
+    (if-not (keyword? eid)
+      (get (.-ident-map db) eid eid)
+      eid))
 
   (in-transaction! [db chan-fn]
     (s/in-transaction!
       (:sqlite-connection db) chan-fn))
 
-  ;; TODO: use q for searching?  Have q use this for searching for a single pattern?
-  (<eavt [db pattern]
-    (let [[e a v] pattern
-          v       (and v (ds/->SQLite schema a v))] ;; We assume e and a are always given.
-      (go-pair
-        (->>
-          {:select [:e :a :v :tx [1 :added]] ;; TODO: generalize columns.
-           :from   [:all_datoms]
-           :where  (cons :and (map #(vector := %1 %2) [:e :a :v] (take-while (comp not nil?) [e a v])))} ;; Must drop nils.
-          (s/format)
-
-          (s/all-rows (:sqlite-connection db))
-          (<?)
-
-          (mapv (partial row->Datom (.-schema db))))))) ;; TODO: understand why (schema db) fails.
-
-  (<avet [db pattern]
-    (let [[a v] pattern
-          v     (ds/->SQLite schema a v)]
-      (go-pair
-        (->>
-          {:select [:e :a :v :tx [1 :added]] ;; TODO: generalize columns.
-           :from   [:all_datoms]
-           :where  [:and [:= :a a] [:= :v v] [:= :index_avet 1]]}
-          (s/format)
-
-          (s/all-rows (:sqlite-connection db))
-          (<?)
-
-          (mapv (partial row->Datom (.-schema db))))))) ;; TODO: understand why (schema db) fails.
-
-  (<apply-datoms [db datoms]
+  (<bootstrapped? [db]
     (go-pair
-      (let [exec   (partial s/execute! (:sqlite-connection db))
-            schema (.-schema db)] ;; TODO: understand why (schema db) fails.
-        ;; TODO: batch insert, batch delete.
-        (doseq [datom datoms]
-          (let [[e a v tx added] datom
-                v                (ds/->SQLite schema a v)
-                fulltext?        (ds/fulltext? schema a)]
-            ;; Append to transaction log.
-            (<? (exec
-                  ["INSERT INTO transactions VALUES (?, ?, ?, ?, ?)" e a v tx (if added 1 0)]))
-            ;; Update materialized datom view.
-            (if (.-added datom)
-              (let [v (if fulltext?
-                        (<? (<insert-fulltext-value db v))
-                        v)]
-                (<? (exec
-                      ["INSERT INTO datoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)" e a v tx
-                       (ds/indexing? schema a) ;; index_avet
-                       (ds/ref? schema a) ;; index_vaet
-                       fulltext? ;; index_fulltext
-                       (ds/unique-value? schema a) ;; unique_value
-                       (ds/unique-identity? schema a) ;; unique_identity
-                       ])))
-              (if fulltext?
-                (<? (exec
-                      ;; TODO: in the future, purge fulltext values from the fulltext_datoms table.
-                      ["DELETE FROM datoms WHERE (e = ? AND a = ? AND v IN (SELECT rowid FROM fulltext_values WHERE text = ?))" e a v]))
-                (<? (exec
-                      ["DELETE FROM datoms WHERE (e = ? AND a = ? AND v = ?)" e a v])))))))
-      db))
+      (->
+        (:sqlite-connection db)
+        (s/all-rows ["SELECT EXISTS(SELECT 1 FROM transactions LIMIT 1) AS bootstrapped"])
+        (<?)
+        (first)
+        (:bootstrapped)
+        (not= 0))))
 
-  (<advance-tx [db]
+  (<av [db a v]
+    (let [[v tag] (ds/->SQLite schema a v)]
+      (go-pair
+        (->>
+          {:select [:e :a :v :tx [1 :added]] ;; TODO: generalize columns.
+           :from   [:all_datoms]
+           :where  [:and [:= :index_avet 1] [:= :a a] [:= :value_type_tag tag] [:= :v v]]}
+          (s/format) ;; TODO: format these statements only once.
+
+          (s/all-rows (:sqlite-connection db))
+          (<?)
+
+          (mapv (partial row->Datom (.-schema db))))))) ;; TODO: understand why (schema db) fails.
+
+  (<next-eid [db tempid]
+    {:pre [(id-literal? tempid)]}
+    {:post [ds/entid?]}
+    (go-pair
+      ;; TODO: keep all of these eid allocations in the transaction report and apply them at the end
+      ;; of the transaction.
+      (let [exec (partial s/execute! (:sqlite-connection db))
+            part (entid db (:part tempid))]
+        (when-not (ds/entid? part) ;; TODO: cache parts materialized view.
+          (raise "Cannot allocate entid for id-literal " tempid " because part " (:part tempid) " is not known"
+                 {:error :db/bad-part
+                  :part (:part tempid)}))
+
+        (<? (exec ["UPDATE parts SET idx = idx + 1 WHERE part = ?" part]))
+        (:eid (first (<? (s/all-rows (:sqlite-connection db) ["SELECT (start + idx) AS eid FROM parts WHERE part = ?" part])))))))
+
+  (<apply-entities [db tx entities]
+    {:pre [(db? db) (sequential? entities)]}
+    (go-pair
+      (let [schema         (.-schema db)
+            many?          (memoize (fn [a] (ds/multival? schema a)))
+            <exec          (partial s/execute! (:sqlite-connection db))]
+        (p :delete-tx-lookup-before
+           (<? (<exec ["DELETE FROM tx_lookup"])))
+
+        (p :insertions
+           (try
+             (doseq [entity entities]
+               (let [[op e a v] entity
+                     [v tag]    (ds/->SQLite schema a v)
+                     fulltext?  (ds/fulltext? schema a)]
+                 (cond
+                   (= op :db/add)
+                   (let [v (if fulltext?
+                             (<? (<insert-fulltext-value db v))
+                             v)]
+                     (if (many? a)
+                       ;; :db.cardinality/many
+                       (<? (<exec [(str "INSERT INTO tx_lookup (e0, a0, v0, tx0, added0, value_type_tag0, index_avet0, index_vaet0, index_fulltext0, unique_value0, sv, svalue_type_tag) VALUES ("
+                                        "?, ?, ?, ?, 1, ?, " ;; e0, a0, v0, tx0, added0, value_type_tag0
+                                        "?, ?, ?, ?, " ;; flags0
+                                        "?, ?" ;; sv, svalue_type_tag
+                                        ")")
+                                   e a v tx tag
+                                   (ds/indexing? schema a) ;; index_avet
+                                   (ds/ref? schema a) ;; index_vaet
+                                   fulltext? ;; index_fulltext
+                                   (ds/unique? schema a) ;; unique_value
+                                   v tag
+                                   ]))
+                       ;; :db.cardinality/one
+                       (do
+                         (<? (<exec [(str "INSERT INTO tx_lookup (e0, a0, v0, tx0, added0, value_type_tag0, index_avet0, index_vaet0, index_fulltext0, unique_value0, sv, svalue_type_tag) VALUES ("
+                                          "?, ?, ?, ?, ?, ?, " ;; TODO: order value and tag closer together.
+                                          "?, ?, ?, ?, " ;; flags0
+                                          "?, ?" ;; sv, svalue_type_tag
+                                          ")")
+                                     e a v tx 1 tag
+                                     (ds/indexing? schema a) ;; index_avet
+                                     (ds/ref? schema a) ;; index_vaet
+                                     fulltext? ;; index_fulltext
+                                     (ds/unique? schema a) ;; unique_value
+                                     v tag
+                                     ]))
+                         (<? (<exec [(str "INSERT INTO tx_lookup (e0, a0, v0, tx0, added0, value_type_tag0, sv, svalue_type_tag) VALUES ("
+                                          "?, ?, ?, ?, ?, ?, "
+                                          "?, ?" ;; sv, svalue_type_tag
+                                          ")")
+                                     e a v tx 0 tag
+                                     nil nil ;; Search values.
+                                     ])))))
+
+                   (= op :db/retract)
+                   (<? (<exec [(str "INSERT INTO tx_lookup (e0, a0, v0, tx0, added0, value_type_tag0, sv, svalue_type_tag) VALUES ("
+                                    "?, ?, ?, ?, ?, ?, "
+                                    "?, ?" ;; sv, svalue_type_tag
+                                    ")")
+                               e a v tx 0 tag
+                               v tag
+                               ]))
+
+                   true
+                   (raise "Unknown operation at " entity ", expected :db/add, :db/retract"
+                          {:error :transact/syntax, :operation op, :tx-data entity}))))
+
+             (catch java.sql.SQLException e
+               (throw (ex-info "Transaction violates cardinality constraint" {} e))))) ;; TODO: say more about the conflicting datoms.
+
+        (p :join
+           ;; Fast, only one table walk: lookup by exact eav.
+           (p :join-eav
+              (<? (<exec [(str "INSERT INTO tx_lookup SELECT t.e0, t.a0, t.v0, t.tx0, t.added0 + 2, t.value_type_tag0, t.index_avet0, t.index_vaet0, t.index_fulltext0, t.unique_value0, t.sv, t.svalue_type_tag, d.rowid, d.e, d.a, d.v, d.tx, d.value_type_tag FROM tx_lookup AS t LEFT JOIN datoms AS d ON t.e0 = d.e AND t.a0 = d.a AND t.sv = d.v AND t.svalue_type_tag = d.value_type_tag AND t.sv IS NOT NULL")])))
+
+           ;; Slower, but still only one table walk: lookup old value by ea.
+           (p :join-ea
+              (<? (<exec [(str "INSERT INTO tx_lookup SELECT t.e0, t.a0, t.v0, t.tx0, t.added0 + 2, t.value_type_tag0, t.index_avet0, t.index_vaet0, t.index_fulltext0, t.unique_value0, t.sv, t.svalue_type_tag, d.rowid, d.e, d.a, d.v, d.tx, d.value_type_tag FROM tx_lookup AS t, datoms AS d WHERE t.sv IS NULL AND t.e0 = d.e AND t.a0 = d.a")]))))
+
+        (p :insert-transaction
+           (p :insert-transaction-added
+              ;; Add datoms that aren't already present.
+              (<? (<exec [(str "INSERT INTO transactions (e, a, v, tx, added, value_type_tag) "
+                               "SELECT e0, a0, v0, ?, 1, value_type_tag0 "
+                               "FROM tx_lookup "
+                               "WHERE added0 IS 3 AND e IS NULL") tx]))) ;; TODO: get rid of magic value 3.
+
+           (p :insert-transaction-retracted
+              ;; Retract datoms carefully, either when they're matched exactly or when the existing value doesn't match the new value.
+              (<? (<exec [(str "INSERT INTO transactions (e, a, v, tx, added, value_type_tag) "
+                               "SELECT e, a, v, ?, 0, value_type_tag "
+                               "FROM tx_lookup "
+                               "WHERE added0 IS 2 AND ((sv IS NOT NULL) OR (sv IS NULL AND v0 IS NOT v)) AND v IS NOT NULL") tx])))) ;; TODO: get rid of magic value 2.
+
+        (try
+          (p :update-datoms-materialized-view
+             (p :insert-datoms-added
+                ;; Add datoms that aren't already present.
+                (<? (<exec [(str "INSERT INTO datoms (e, a, v, tx, value_type_tag, index_avet, index_vaet, index_fulltext, unique_value) "
+                                 "SELECT e0, a0, v0, ?, value_type_tag0, "
+                                 "index_avet0, index_vaet0, index_fulltext0, unique_value0 "
+                                 "FROM tx_lookup "
+                                 "WHERE added0 IS 3 AND e IS NULL") tx])) ;; TODO: get rid of magic value 3.)
+
+                ;; TODO: retract fulltext datoms correctly.
+                (p :delete-datoms-retracted
+                   (<? (<exec [(str "WITH ids AS (SELECT l.rid FROM tx_lookup AS l WHERE l.added0 IS 2 AND ((l.sv IS NOT NULL) OR (l.sv IS NULL AND l.v0 IS NOT l.v))) " ;; TODO: get rid of magic value 2.
+                                    "DELETE FROM datoms WHERE rowid IN ids"
+                                    )])))))
+
+          (catch java.sql.SQLException e
+            (throw (ex-info "Transaction violates unique constraint" {} e)))) ;; TODO: say more about the conflicting datoms.
+
+        ;; The lookup table takes space on disk, so we purge it aggressively.
+        (p :delete-tx-lookup-after
+           (<? (<exec ["DELETE FROM tx_lookup"])))
+
+        ;; The transaction has been written -- read it back.  (We index on tx, so the following is fast.)
+        (let [tx-data (p :select-tx-data
+                         (->>
+                           (s/all-rows (:sqlite-connection db) ["SELECT * FROM transactions WHERE tx = ?" tx])
+                           (<?)
+
+                           (mapv (partial row->Datom schema))))]
+          tx-data))))
+
+  (<apply-db-ident-assertions [db added-idents merge]
     (go-pair
       (let [exec (partial s/execute! (:sqlite-connection db))]
-        ;; (let [ret (<? (exec
-        ;;                 ;; TODO: be more clever about UPDATE OR ...?
-        ;;                 ["UPDATE metadata SET current_tx = ? WHERE current_tx = ?" (inc (:current-tx db)) (:current-tx db)]))]
-
-        ;; TODO: handle exclusion across transactions here.
-        (update db :current-tx inc))))
-
-  (<apply-db-ident-assertions [db added-idents]
-    (go-pair
-      (let [->SQLite (get-in ds/value-type-map [:db.type/keyword :->SQLite]) ;; TODO: make this a protocol.
-            exec     (partial s/execute! (:sqlite-connection db))]
         ;; TODO: batch insert.
         (doseq [[ident entid] added-idents]
           (<? (exec
-                ["INSERT INTO idents VALUES (?, ?)" (->SQLite ident) entid]))))
-      db))
+                ["INSERT INTO idents VALUES (?, ?)" (sqlite-schema/->SQLite ident) entid]))))
 
-  (<apply-db-install-assertions [db fragment]
+      (let [db (update db :ident-map #(merge-with merge % added-idents))
+            db (update db :ident-map #(merge-with merge % (clojure.set/map-invert added-idents)))]
+        db)))
+
+  (<apply-db-install-assertions [db fragment merge]
     (go-pair
-      (let [->SQLite (get-in ds/value-type-map [:db.type/keyword :->SQLite]) ;; TODO: make this a protocol.
-            exec     (partial s/execute! (:sqlite-connection db))]
+      (let [exec (partial s/execute! (:sqlite-connection db))]
         ;; TODO: batch insert.
         (doseq [[ident attr-map] fragment]
           (doseq [[attr value] attr-map]
             (<? (exec
-                  ["INSERT INTO schema VALUES (?, ?, ?)" (->SQLite ident) (->SQLite attr) (->SQLite value)])))))
-      db))
+                  ["INSERT INTO schema VALUES (?, ?, ?)" (sqlite-schema/->SQLite ident) (sqlite-schema/->SQLite attr) (sqlite-schema/->SQLite value)])))))
+
+      (let [symbolic-schema (merge-with merge (:symbolic-schema db) fragment)
+            schema          (ds/schema (into {} (map (fn [[k v]] [(entid db k) v]) symbolic-schema)))]
+        (assoc db
+               :symbolic-schema symbolic-schema
+               :schema schema))))
 
   (close-db [db] (s/close (.-sqlite-connection db)))
 
@@ -260,6 +392,24 @@
        (System/currentTimeMillis)
        :cljs
        (.getTime (js/Date.)))))
+
+(defn with-ident [db ident entid]
+  (update db :ident-map #(assoc % ident entid, entid ident)))
+
+(defn db [sqlite-connection idents schema]
+  {:pre [(map? idents)
+         (every? keyword? (keys idents))
+         (map? schema)
+         (every? keyword? (keys schema))]}
+  (let [entid-schema (ds/schema (into {} (map (fn [[k v]] [(k idents) v]) schema))) ;; TODO: fail if ident missing.
+        ident-map    (into idents (clojure.set/map-invert idents))]
+    (map->DB
+      {:sqlite-connection sqlite-connection
+       :ident-map         ident-map
+       :symbolic-schema   schema
+       :schema            entid-schema
+       ;; TODO :parts
+       })))
 
 ;; TODO: factor this into the overall design.
 (defn <?run
