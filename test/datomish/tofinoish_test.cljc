@@ -207,26 +207,34 @@
   (nth x 2))
 
 (defn <visited [db
-               {:keys [limit]
+               {:keys [limit since]
                 :or {limit 10}}]
-  (go-pair
-    (let [rows (<? (d/<q
-                     db
-                     '[:find ?uri ?title (max ?time)
-                       :in $
-                       :where
-                       [?page :page/url ?uri]
-                       [?page :page/title ?title]
-                       [?page :page/visit ?visit]
-                       [?visit :visit/visitAt ?time]]
-                     {}))]
-      (println "Raw rows:" (pr-str rows))
-    (->>
-      rows
-      (sort-by (comp unchecked-negate third))    ;; TODO: these should be dates!
-      (take limit)
-      (map (fn [[uri title lastVisited]]
-             {:uri uri :title title :lastVisited lastVisited}))))))
+  (let [where
+        (if since
+          '[[?visit :visit/visitAt ?time]
+           [(> ?time ?since)]
+           [?page :page/visit ?visit]
+           [?page :page/url ?uri]
+           [?page :page/title ?title]]
+
+          '[[?page :page/visit ?visit]
+           [?visit :visit/visitAt ?time]
+           [?page :page/url ?uri]
+           [?page :page/title ?title]])]
+
+    (go-pair
+      (let [rows (<? (d/<q
+                       db
+                       {:find '[?uri ?title (max ?time)]
+                        :in (if since '[$ ?since] '[$])
+                        :where where}
+                       {:since since}))]
+      (->>
+        rows
+        (sort-by (comp unchecked-negate third))    ;; TODO: these should be dates!
+        (take limit)
+        (map (fn [[uri title lastVisited]]
+               {:uri uri :title title :lastVisited lastVisited})))))))
 
 (defn <find-title [db url]
   ;; Until we support [:find ?title . :in…] we crunch this by hand.
