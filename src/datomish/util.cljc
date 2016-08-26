@@ -30,12 +30,13 @@
          ~expr
          (cond-let ~@rest)))))
 
+;; These downcase, because JDBC downcases. *sigh*
 (defn var->sql-type-var
   "Turns '?xyz into :_xyz_type_tag."
   [x]
   (if (and (symbol? x)
            (str/starts-with? (name x) "?"))
-    (keyword (str "_" (subs (name x) 1) "_type_tag"))
+    (keyword (str "_" (clojure.string/lower-case (subs (name x) 1)) "_type_tag"))
     (throw (ex-info (str x " is not a Datalog var.") {}))))
 
 (defn var->sql-var
@@ -43,7 +44,7 @@
   [x]
   (if (and (symbol? x)
            (str/starts-with? (name x) "?"))
-    (keyword (subs (name x) 1))
+    (keyword (clojure.string/lower-case (subs (name x) 1)))
     (throw (ex-info (str x " is not a Datalog var.") {}))))
 
 (defn aggregate->sql-var
