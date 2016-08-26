@@ -158,6 +158,36 @@
       [?tx :db/txInstant ?ts]]
     {}))
 
+(defn <star-page [conn {:keys [url uri title session]}]
+  (let [page (d/id-literal :db.part/user -1)]
+    (d/<transact!
+      conn
+      [{:db/id        :db/tx
+        :event/session session}
+       {:db/id        page
+        :page/url     (or uri url)
+        :page/title   title
+        :page/starred true}])))
+
+(defn <starred-pages [db]
+  (go-pair
+    (->>
+      (<?
+        (d/<q
+          db
+          '[:find ?page ?uri ?title ?starredOn
+            :in $
+            :where
+            [?page :page/starred true ?tx]
+            [?tx :db/txInstant ?starredOn]
+            [?page :page/url ?uri]
+            [?page :page/title ?title]                   ; N.B., this means we will exclude pages with no title.
+            ]
+          {}))
+
+      (map (fn [[page uri title starredOn]]
+             {:page page :uri uri :title title :starredOn starredOn})))))
+
 ;; TODO: return ID?
 (defn <add-visit [conn {:keys [url uri title session]}]
   (let [visit (d/id-literal :db.part/user -1)
@@ -213,6 +243,18 @@
 (deftest-db test-schema-evolution conn
   (<? (d/<transact! conn page-schema))
   (<? (d/<transact! conn tofino-schema)))
+
+(deftest-db test-starring conn
+  (<? (d/<transact! conn tofino-schema))
+  (let [session (<? (<start-session conn {:ancestor nil :scope "foo"}))
+        earliest (instant (now))]
+    (<? (<star-page conn {:uri "http://mozilla.org/"
+                          :title "Mozilla"
+                          :session session}))
+    (let [[moz & starred] (<? (<starred-pages (d/db conn)))]
+      (is (empty? starred))
+      (is (= "Mozilla" (:title moz)))
+      (is (<= earliest (instant (:starredOn moz)) (instant (now)))))))
 
 (deftest-db test-simple-sessions conn
   (<? (d/<transact! conn tofino-schema))
