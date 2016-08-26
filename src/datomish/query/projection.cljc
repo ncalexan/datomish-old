@@ -193,7 +193,8 @@
   (letfn [(variable->projector [elem known-types extracted-types tag-decoder]
           (when (instance? Variable elem)
             (let [var (:symbol elem)
-                  projected-var (util/var->sql-var var)]
+                  projected-var (util/var->sql-var var)
+                  row-lookup (util/lower-case-keyword projected-var)]  ; Because JDBC will lower-case our rows!
 
               (if-let [type (get known-types var)]
                 ;; We know the type! We already know how to decode it.
@@ -201,25 +202,25 @@
                 ;; TODO: optimize this without making it horrible.
                 (let [decoder (tag-decoder (ss/->tag type))]
                   (fn [row]
-                    (decoder (get row projected-var))))
+                    (decoder (get row row-lookup))))
 
                 ;; We don't know the type. Find the type projection column
                 ;; and use it to decode the value.
                 (if (contains? extracted-types var)
-                  (let [type-column (util/var->sql-type-var var)]
+                  (let [type-column (util/lower-case-keyword (util/var->sql-type-var var))]
                     (fn [row]
                       (ss/<-tagged-SQLite
                         (get row type-column)
-                        (get row projected-var))))
+                        (get row row-lookup))))
 
                   ;; We didn't extract a type and we don't know it in advance.
                   ;; Just pass through; the :col will look itself up in the row.
-                  projected-var)))))
+                  row-lookup)))))
 
           ;; For now we assume numerics and that everything will shake out in the wash.
           (aggregate->projector [elem]
             (when (instance? Aggregate elem)
-              (let [var (aggregate->projected-var elem)]
+              (let [var (util/lower-case-keyword (aggregate->projected-var elem))]
                 (fn [row]
                   (get row var)))))]
 
