@@ -77,7 +77,6 @@
       ;; Type known; no need to accumulate a type-binding.
       bound
       (let [tag-col (sql/qualify table :value_type_tag)]
-        (println "Binding type of var" var "from" col ": type in" tag-col)
         (assoc-in bound [:extracted-types var] tag-col)))))
 
 (defn constrain-column-to-constant [cc table position value]
