@@ -164,10 +164,12 @@
       conn
       [{:db/id        :db/tx
         :event/session session}
-       {:db/id        page
-        :page/url     (or uri url)
-        :page/title   title
-        :page/starred true}])))
+        (merge
+          (when title
+            {:page/title title})
+          {:db/id        page
+           :page/url     (or uri url)
+           :page/starred true})])))
 
 (defn <starred-pages [db]
   (go-pair
@@ -198,10 +200,12 @@
          :event/session session}
         {:db/id        visit
          :visit/visitAt (now)}
-        {:db/id        page
-         :page/url     (or uri url)
-         :page/title   title
-         :page/visit visit}])))
+        (merge
+          (when title
+            {:page/title title})
+          {:db/id        page
+           :page/url     (or uri url)
+           :page/visit visit})])))
 
 (defn- third [x]
   (nth x 2))
@@ -215,12 +219,12 @@
            [(> ?time ?since)]
            [?page :page/visit ?visit]
            [?page :page/url ?uri]
-           [?page :page/title ?title]]
+           [(get-else $ ?page :page/title "") ?title]]
 
           '[[?page :page/visit ?visit]
            [?visit :visit/visitAt ?time]
            [?page :page/url ?uri]
-           [?page :page/title ?title]])]
+           [(get-else $ ?page :page/title "") ?title]])]
 
     (go-pair
       (let [rows (<? (d/<q
@@ -244,7 +248,9 @@
         (<?
           (d/<q db
                 '[:find ?title :in $ ?url
-                  :where [?page :page/url ?url] [?page :page/title ?title]]
+                  :where
+                  [?page :page/url ?url]
+                  [(get-else $ ?page :page/title "") ?title]]
                 {:url url}))))))
 
 ;; Ensure that we can grow the schema over time.
@@ -262,7 +268,7 @@
     (let [[moz & starred] (<? (<starred-pages (d/db conn)))]
       (is (empty? starred))
       (is (= "Mozilla" (:title moz)))
-      (is (<= earliest (instant (:starredOn moz)) (instant (now)))))))
+      (is (<= earliest (:starredOn moz) (instant (now)))))))
 
 (deftest-db test-simple-sessions conn
   (<? (d/<transact! conn tofino-schema))
@@ -301,6 +307,15 @@
 
     (is (= "Example Philanthropy New"
            (<? (<find-title (d/db conn) "http://example.org/"))))
+
+    ;; Add a page with no title.
+    (<? (<add-visit conn {:uri "http://notitle.example.org/"
+                          :session session}))
+    (is (= "" (<? (<find-title (d/db conn) "http://notitle.example.org/"))))
+    (is (= (select-keys (first (<? (<visited (d/db conn) {:limit 1})))
+                        [:uri :title])
+           {:uri "http://notitle.example.org/"
+            :title ""}))
 
     ;; If we end this one, then it's no longer active but is ended.
     (<? (<end-session conn {:session session}))
