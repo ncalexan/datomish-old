@@ -99,7 +99,37 @@
     :db/doc                "The session in which a tx took place."
     :db.install/_attribute :db.part/db}])
 
-(def tofino-schema (concat page-schema visit-schema session-schema))
+(def save-schema
+  [{:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/ref
+    :db/ident :save/page}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/instant
+    :db/ident :save/savedAt}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/string
+    :db/fulltext true
+    :db/ident :save/title}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/string
+    :db/fulltext true
+    :db/ident :save/excerpt}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/string
+    :db/fulltext true
+    :db/ident :save/content}])
+
+(def tofino-schema (concat page-schema visit-schema session-schema save-schema))
 
 (defn instant [x]
   #?(:cljs x)
@@ -189,6 +219,49 @@
 
       (map (fn [[page uri title starredOn]]
              {:page page :uri uri :title title :starredOn starredOn})))))
+
+(defn <save-page [conn {:keys [url uri title session excerpt content]}]
+  (let [save (d/id-literal :db.part/user -1)
+        page (d/id-literal :db.part/user -2)]
+    (d/<transact!
+      conn
+      [{:db/id        :db/tx
+        :event/session session}
+       {:db/id page
+        :page/url (or uri url)}
+       (merge
+         {:db/id        save
+          :save/savedAt (now)
+          :save/page page}
+         (when title
+           {:save/title title})
+         (when excerpt
+           {:save/excerpt excerpt})
+         (when content
+           {:save/content content}))])))
+
+(defn <saved-pages [db]
+  (d/<q db
+        '[:find ?page ?url ?title ?excerpt
+          :in $
+          :where
+          [?save :save/page ?page]
+          [?page :page/url ?url]
+          [(get-else $ ?save :save/title "") ?title]
+          [(get-else $ ?save :save/excerpt "") ?excerpt]]
+        {}))
+
+(defn <saved-pages-matching-string [db string]
+  (d/<q db
+        {:find '[?page ?url ?title ?excerpt]
+         :in '[$]
+         :where [[(list 'fulltext '$ :any string) '[[?save]]]
+                 '[?save :save/page ?page]
+                 '[?page :page/url ?url]
+                 '[(get-else $ ?save :save/title "") ?title]
+                 '[(get-else $ ?save :save/excerpt "") ?excerpt]]}
+        {}))
+
 
 ;; TODO: return ID?
 (defn <add-visit [conn {:keys [url uri title session]}]
@@ -321,3 +394,73 @@
     (<? (<end-session conn {:session session}))
     (is (empty? (<? (<active-sessions (d/db conn)))))
     (is (= 1 (count (<? (<ended-sessions (d/db conn))))))))
+
+(deftest-db test-saved-pages conn
+  (<? (d/<transact! conn tofino-schema))
+
+  ;; Start a session.
+  (let [session (<? (<start-session conn {:ancestor nil :scope "foo"}))]
+    (<? (<save-page conn {:uri "http://example.com/apples/1"
+                          :title "A page about apples."
+                          :session session
+                          :excerpt "This page tells you things about apples."
+                          :content "<html><head><title>A page about apples.</title></head><body><p>Fruit content goes here.</p></body></html>"}))
+    (<? (<save-page conn {:uri "http://example.com/apricots/1"
+                          :title "A page about apricots."
+                          :session session
+                          :excerpt nil
+                          :content "<html><head><title>A page about apricots.</title></head><body><p>Fruit content goes here.</p></body></html>"}))
+    (<? (<save-page conn {:uri "http://example.com/bananas/2"
+                          :title "A page about bananas"
+                          :session session
+                          :excerpt nil
+                          :content nil}))
+
+    (let [db (d/db conn)]
+      ;; Fetch all.
+      (let [all (sort-by first (<? (<saved-pages db)))]
+        (is (= 3 (count all)))
+        (let [[[apple-id apple-url apple-title apple-excerpt]
+               [apricot-id apricot-url apricot-title apricot-excerpt]
+               [banana-id banana-url banana-title banana-excerpt]]
+              all]
+          (is (= apple-url "http://example.com/apples/1"))
+          (is (= apple-title "A page about apples."))
+          (is (= apple-excerpt "This page tells you things about apples."))
+          (is (= apricot-url "http://example.com/apricots/1"))
+          (is (= apricot-title "A page about apricots."))
+          (is (= apricot-excerpt ""))
+          (is (= banana-url "http://example.com/bananas/2"))
+          (is (= banana-title "A page about bananas"))
+          (is (= banana-excerpt ""))))
+
+      ;; Match against title.
+      (let [this-page (sort-by first (<? (<saved-pages-matching-string db "about apricots")))]
+        (is (= 1 (count this-page)))
+        (let [[[apricot-id apricot-url apricot-title apricot-excerpt]]
+              this-page]
+          (is (= apricot-url "http://example.com/apricots/1"))
+          (is (= apricot-title "A page about apricots."))
+          (is (= apricot-excerpt ""))))
+
+      ;; Match against excerpt.
+      (let [this-page (sort-by first (<? (<saved-pages-matching-string db "This page")))]
+        (is (= 1 (count this-page)))
+        (let [[[apple-id apple-url apple-title apple-excerpt]]
+              this-page]
+          (is (= apple-url "http://example.com/apples/1"))
+          (is (= apple-title "A page about apples."))
+          (is (= apple-excerpt "This page tells you things about apples."))))
+
+      ;; Match against content.
+      (let [fruit-content (sort-by first (<? (<saved-pages-matching-string db "Fruit content")))]
+        (is (= 2 (count fruit-content)))
+        (let [[[apple-id apple-url apple-title apple-excerpt]
+               [apricot-id apricot-url apricot-title apricot-excerpt]]
+              fruit-content]
+        (is (= apple-url "http://example.com/apples/1"))
+        (is (= apple-title "A page about apples."))
+        (is (= apple-excerpt "This page tells you things about apples."))
+        (is (= apricot-url "http://example.com/apricots/1"))
+        (is (= apricot-title "A page about apricots."))
+        (is (= apricot-excerpt "")))))))
