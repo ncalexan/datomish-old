@@ -143,12 +143,12 @@
     ;; The primary projections from the :find list.
     ;; Note that deduplication will be necessary, because we unpack aggregates.
     (let [projected-vars
-          (keep (fn [elem]
-                  (or (aggregate->var elem)
-                      (variable->var elem)
-                      (raise "Only able to :find variables or aggregates."
-                             {:elem elem})))
-                elements)
+          (map (fn [elem]
+                 (or (aggregate->var elem)
+                     (variable->var elem)
+                     (raise "Only able to :find variables or aggregates."
+                            {:elem elem})))
+               elements)
 
           ;; If we have any GROUP BY requirements from :with, that aren't already
           ;; included in the above, project them now.
