@@ -497,16 +497,17 @@
 
 (deftest-db test-get-else conn
   (let [attrs (<? (<initialize-with-schema conn page-schema))]
-    (is (= {:select '([:datoms0.e :page]
-                      [{:select [#sql/call
-                                 [:coalesce
-                                  {:select [:v],
-                                   :from [:datoms],
-                                   :where [:and
-                                           [:= a 65540]
-                                           [:= e :datoms0.e]],
-                                   :limit 1}
-                                  "No title"]],
+    (is (= {:select (list
+                      [:datoms0.e :page]
+                      [{:select [(sql/call
+                                   :coalesce
+                                   {:select [:v],
+                                    :from [:datoms],
+                                    :where [:and
+                                            [:= 'a 65540]
+                                            [:= 'e :datoms0.e]],
+                                    :limit 1}
+                                   "No title")],
                         :limit 1} :title]),
             :modifiers [:distinct],
             :from '([:datoms datoms0]),
