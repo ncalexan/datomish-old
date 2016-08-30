@@ -116,7 +116,8 @@
             v
             (db/entid db v))]
     (when-not (integer? a)
-      (println "WARNING: unknown attribute" a))
+      (raise "Unknown attribute " a
+             {:form orig :attribute a}))
     [op e a v tx]))
 
 (defrecord Transaction [db tempids entities])
