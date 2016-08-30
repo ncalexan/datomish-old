@@ -33,21 +33,25 @@
 (defn lower-case-keyword [x]
   (keyword (clojure.string/lower-case (name x))))
 
+(defn ensure-datalog-var [x]
+  (or (and (symbol? x)
+           (nil? (namespace x))
+           (str/starts-with? (name x) "?"))
+      (throw (ex-info (str x " is not a Datalog var.") {}))))
+
 (defn var->sql-type-var
   "Turns '?xyz into :_xyz_type_tag."
   [x]
-  (if (and (symbol? x)
-           (str/starts-with? (name x) "?"))
-    (keyword (str "_" (subs (name x) 1) "_type_tag"))
-    (throw (ex-info (str x " is not a Datalog var.") {}))))
+  (and
+    (ensure-datalog-var x)
+    (keyword (str "_" (subs (name x) 1) "_type_tag"))))
 
 (defn var->sql-var
   "Turns '?xyz into :xyz."
   [x]
-  (if (and (symbol? x)
-           (str/starts-with? (name x) "?"))
-    (keyword (subs (name x) 1))
-    (throw (ex-info (str x " is not a Datalog var.") {}))))
+  (and
+    (ensure-datalog-var x)
+    (keyword (subs (name x) 1))))
 
 (defn aggregate->sql-var
   "Turns (:max 'column) into :%max.column."
