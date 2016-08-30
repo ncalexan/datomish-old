@@ -62,7 +62,7 @@
     (<? (s/all-rows sqlite-connection ["PRAGMA journal_mode=wal"]))
     (<? (s/all-rows sqlite-connection ["PRAGMA wal_autocheckpoint=32"]))
     (<? (s/all-rows sqlite-connection ["PRAGMA journal_size_limit=3145728"]))
-    (s/execute! sqlite-connection ["PRAGMA foreign_keys=ON"])))
+    (<? (s/execute! sqlite-connection ["PRAGMA foreign_keys=ON"]))))
 
 (defn <db-with-sqlite-connection
   [sqlite-connection]
