@@ -67,7 +67,7 @@
           aggregate-fn (get aggregate-functions (keyword fn-symbol))]
 
       (when-not aggregate-fn
-        (raise-str "Unknown aggregate function."))
+        (raise-str "Unknown aggregate function " fn-symbol))
 
       (let [funcall-var (util/aggregate->sql-var aggregate-fn lookup-var)
             project-as (aggregate-symbols->projected-var fn-symbol var-symbol)]
