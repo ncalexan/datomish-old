@@ -7,7 +7,7 @@
      [honeysql.format :as fmt]
      [datomish.query.cc :as cc]
      [datomish.schema :as schema]
-     [datomish.sqlite-schema :refer [->tag]]
+     [datomish.sqlite-schema :refer [->tag ->SQLite]]
      [datomish.query.source
       :as source
       :refer [attribute-in-source
@@ -212,6 +212,8 @@
                      (not (datomish.schema/multival? schema a)))
         (raise-str "Attribute " a " is not cardinality-one."))
 
+      ;; TODO: type-check the default value.
+
       (condp instance? e
         Variable
         (let [e (:symbol e)
@@ -231,7 +233,7 @@
                                       [:= 'a a]
                                       [:= 'e e-binding]]
                               :limit 1}
-                             default-val)]
+                             (->SQLite default-val))]
                           :limit 1}]
             (->
               (assoc-in cc [:known-types (:symbol var)] a-type)
