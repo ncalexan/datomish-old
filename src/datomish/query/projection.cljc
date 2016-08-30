@@ -64,12 +64,12 @@
     (let [var-symbol (:symbol (first (:args elem)))
           fn-symbol (:symbol (:fn elem))
           lookup-var (lookup-fn var-symbol)
-          fn (get aggregate-functions (keyword fn-symbol))]
+          aggregate-fn (get aggregate-functions (keyword fn-symbol))]
 
-      (when-not fn
+      (when-not aggregate-fn
         (raise-str "Unknown aggregate function."))
 
-      (let [funcall-var (util/aggregate->sql-var fn lookup-var)
+      (let [funcall-var (util/aggregate->sql-var aggregate-fn lookup-var)
             project-as (aggregate-symbols->projected-var fn-symbol var-symbol)]
         [[funcall-var project-as]]))))
 
