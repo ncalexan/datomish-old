@@ -5,7 +5,8 @@
 (ns datomish.js
   (:refer-clojure :exclude [])
   (:require-macros
-     [datomish.pair-chan :refer [go-pair <?]])
+     [datomish.pair-chan :refer [go-pair <?]]
+     [datomish.promises :refer [go-promise]])
   (:require
      [cljs.core.async :as a :refer [take! <! >!]]
      [cljs.reader]
@@ -14,23 +15,12 @@
      [datomish.db :as db]
      [datomish.db-factory :as db-factory]
      [datomish.pair-chan]
+     [datomish.promises :refer [take-pair-as-promise!]]
      [datomish.sqlite :as sqlite]
      [datomish.simple-schema :as simple-schema]
      [datomish.js-sqlite :as js-sqlite]
      [datomish.transact :as transact]))
 
-(defn- take-pair-as-promise! [ch f]
-  ;; Just like take-as-promise!, but aware that it's handling a pair channel.
-  ;; Also converts values, if desired.
-  (promise
-    (fn [resolve reject]
-      (letfn [(split-pair [[v e]]
-                (if e
-                  (do
-                    (println "Got error:" e)
-                    (reject e))
-                  (resolve (f v))))]
-        (cljs.core.async/take! ch split-pair)))))
 
 ;; Public API.
 
@@ -40,13 +30,9 @@
 (defn ^:export q [db find options]
   (let [find (cljs.reader/read-string find)
         opts (cljify options)]
-    (println "Running query " (pr-str find) (pr-str {:foo find}) (pr-str opts))
     (take-pair-as-promise!
-      (go-pair
-        (let [res (<? (db/<?q db find opts))]
-          (println "Got results: " (pr-str res))
-          (clj->js res)))
-      identity)))
+      (db/<?q db find opts)
+      clj->js)))
 
 (defn ^:export ensure-schema [conn simple-schema]
   (let [simple-schema (cljify simple-schema)
@@ -97,5 +83,4 @@
              :transact (fn [tx-data] (transact c tx-data))
              :close (fn [] (db/close-db db))
              :toString (fn [] (str "#<DB " path ">"))
-             :path path}))))
-    identity))
+             :path path}))))))
