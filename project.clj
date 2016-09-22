@@ -12,17 +12,24 @@
                  [jamesmacaulay/cljs-promises "0.1.0"]]
 
   ;; The browser will never require from the .JAR anyway.
-  :source-paths ["src/common" "src/node"]
+  :source-paths [
+                 "src/common"
+                 ;; Can't be enabled by default: layers on top of cljsbuild!
+                 ;; Instead, add the :node profile:
+                 ;;   lein with-profile node install
+                 ;"src/node"
+                 ]
 
   :cljsbuild {:builds
               {
                :release-node
                {
-                :source-paths   ["src/node" "src/common"]
+                :source-paths   ["src/node"]
                 :assert         false
                 :compiler
                 {
                  :elide-asserts  true
+                 :externs        ["src/node/externs.js"]
                  :hashbang       false
                  :language-in    :ecmascript5
                  :language-out   :ecmascript5
@@ -31,7 +38,9 @@
                  :output-to      "release-node/datomish.bare.js"
                  :output-wrapper false
                  :parallel-build true
-                 :pretty-print   false
+                 :pretty-print   true
+                 :pseudo-names   true
+                 :static-fns     true
                  :target         :nodejs
                  }
                 :notify-command ["release-node/wrap_bare.sh"]}
@@ -46,7 +55,7 @@
                ;; There's no point in generating a source map -- it'll be wrong
                ;; due to wrapping.
                {
-                :source-paths   ["src/browser" "src/common"]
+                :source-paths   ["src/common" "src/browser"]
                 :assert         false
                 :compiler
                 {
@@ -67,9 +76,10 @@
                 :notify-command ["release-browser/wrap_bare.sh"]}
 
                :advanced
-               {:source-paths ["src/node" "src/common"]
+               {:source-paths ["src/node"]
                 :compiler
                 {
+                 :externs        ["src/node/externs.js"]
                  :language-in    :ecmascript5
                  :language-out   :ecmascript5
                  :output-dir     "target/advanced"
@@ -83,7 +93,7 @@
 
                :test
                {
-                :source-paths ["src/node" "src/common" "test"]
+                :source-paths ["src/node" "test"]
                 :compiler
                 {
                  :language-in    :ecmascript5
@@ -98,7 +108,8 @@
                  }}
                }}
 
-  :profiles {:dev {:dependencies [[cljsbuild "1.1.3"]
+  :profiles {:node {:source-paths ["src/common" "src/node"]}
+             :dev {:dependencies [[cljsbuild "1.1.3"]
                                   [tempfile "0.2.0"]
                                   [com.cemerick/piggieback "0.2.1"]
                                   [org.clojure/tools.nrepl "0.2.10"]
