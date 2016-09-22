@@ -24,7 +24,7 @@
               {
                :release-node
                {
-                :source-paths   ["src/node"]
+                :source-paths   ["src/node" "src/common"]
                 :assert         false
                 :compiler
                 {
@@ -55,7 +55,7 @@
                ;; There's no point in generating a source map -- it'll be wrong
                ;; due to wrapping.
                {
-                :source-paths   ["src/browser"]
+                :source-paths   ["src/browser" "src/common"]
                 :assert         false
                 :compiler
                 {
@@ -93,7 +93,7 @@
 
                :test
                {
-                :source-paths ["src/node" "test"]
+                :source-paths ["src/node" "src/common" "test"]
                 :compiler
                 {
                  :language-in    :ecmascript5
