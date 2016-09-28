@@ -2,7 +2,7 @@
 
 Datomish is a persistent, embedded knowledge base. It's written in ClojureScript, and draws heavily on [DataScript](https://github.com/tonsky/datascript) and [Datomic](http://datomic.com).
 
-Note that at time of writing, there's nothing here.
+Datomish compiles into a single JavaScript file, and is usable both in Node (on top of `promise_sqlite`) and in Firefox (on top of `Sqlite.jsm`). It also works in pure Clojure on the JVM on top of `jdbc-sqlite`.
 
 
 ## Motivation
@@ -63,15 +63,17 @@ contribute.
 
 At present this code is licensed under MPLv2.0. That license is subject to change prior to external contributions.
 
+Datomish includes some code from DataScript, kindly relicensed by Nikita Prokopov.
+
+
 ## SQLite dependencies
 
 Datomish uses partial indices, which are available in SQLite 3.8.0 and higher.
 
 It also uses FTS4, which is [a compile time option](http://www.sqlite.org/fts3.html#section_2).
 
-## Running a REPL
 
-### Prep
+## Prep
 
 You'll need [Leiningen](http://leiningen.org).
 
@@ -86,7 +88,7 @@ npm install
 brew install rlwrap
 ```
 
-Run `lein cljsbuild auto advanced` to generate JavaScript into `target/`.
+## Running a REPL
 
 ### Starting a ClojureScript REPL from the terminal
 
@@ -136,21 +138,48 @@ Now you can use `:Eval`, `cqc`, and friends to evaluate code. Fireplace should c
 :Connect nrepl://localhost:62385
 ```
 
-## To run the ClojureScript tests
+## To run tests in ClojureScript
 
 Run `lein doo node test once`, or `lein doo node` to re-run on file changes.
 
-### Preparing an NPM release
+## To run tests in Clojure
 
-The intention is that the `release-js/` directory is roughly the shape of an npm-ready JavaScript package.
+Run `lein test`.
 
-To generate a require/import-ready `release-js/datomish.js`, run
+## To run smoketests with the built release library in a Node environment
+
 ```
-lein cljsbuild once release
+# Build.
+lein cljsbuild once release-node
+npm run test
+```
+
+## To build for Firefox
+
+```
+lein cljsbuild once release-browser
+```
+
+### To build and run the example Firefox add-on:
+
+```
+cd addon
+./build.sh
+cd release
+./run.sh
+```
+
+## Preparing an NPM release
+
+The intention is that the `target/release-node/` directory is roughly the shape of an npm-ready JavaScript package.
+
+To generate a require/import-ready `target/release-node/datomish.js`, run
+```
+lein cljsbuild once release-node
 ```
 To verify that importing into Node.js succeeds, run
 ```
-node release-js/test
+npm run test
 ```
 
 Many thanks to ([David Nolen](https://github.com/swannodette)) and ([Nikita Prokopov](https://github.com/tonsky)) for demonstrating how to package ClojureScript for distribution via npm.
