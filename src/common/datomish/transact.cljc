@@ -6,7 +6,7 @@
   #?(:cljs
      (:require-macros
       [datomish.pair-chan :refer [go-pair <?]]
-      [cljs.core.async.macros :refer [go]]))
+      [cljs.core.async.macros :refer [go go-loop]]))
   (:require
    [datomish.query.context :as context]
    [datomish.query.projection :as projection]
@@ -25,7 +25,7 @@
    [taoensso.tufte :as tufte
     #?(:cljs :refer-macros :clj :refer) [defnp p profiled profile]]
    #?@(:clj [[datomish.pair-chan :refer [go-pair <?]]
-             [clojure.core.async :as a :refer [chan go <! >!]]])
+             [clojure.core.async :as a :refer [chan go go-loop <! >!]]])
    #?@(:cljs [[datomish.pair-chan]
               [cljs.core.async :as a :refer [chan <! >!]]]))
   #?(:clj
@@ -45,7 +45,9 @@
     [conn]
     "Get the full transaction history DB associated with this connection."))
 
-(defrecord Connection [current-db]
+;; (defrecord Listeners
+
+(defrecord Connection [current-db listener-counter listener-source listener-mult listener-chans]
   IConnection
   (close [conn] (db/close-db @(:current-db conn)))
 
@@ -61,7 +63,7 @@
                      db-after  ;; The DB after the transaction.
                      tx        ;; The tx ID represented by the transaction in this report; refer :db/tx.
                      txInstant ;; The timestamp instant when the the transaction was processed/committed in this report; refer :db/txInstant.
-                     entities  ;; The set of entities (like [:db/add e a v tx]) processed.
+                     entities  ;; The set of entities (like [:db/add e a v]) processed.
                      tx-data   ;; The set of datoms applied to the database, like (Datom. e a v tx added).
                      tempids   ;; The map from id-literal -> numeric entid.
                      part-map  ;; Map {:db.part/user {:start 0x10000 :idx 0x10000}, ...}.
@@ -101,7 +103,13 @@
 ;; TODO: implement support for DB parts?
 
 (defn connection-with-db [db]
-  (map->Connection {:current-db (atom db)}))
+  (let [listener-source (a/chan (a/sliding-buffer 1))]
+    (map->Connection {:current-db       (atom db)
+                      :listener-counter (atom 12345)             ;; Easy-to-identify magic number.
+                      :listener-source  listener-source
+                      :listener-mult    (a/mult listener-source) ;; Just for tapping.
+                      :listener-chans   (atom {})
+                      })))
 
 ;; ;; TODO: persist max-tx and max-eid in SQLite.
 
@@ -118,7 +126,7 @@
     true
     entity))
 
-(defn maybe-ident->entid [db [op e a v tx :as orig]]
+(defn maybe-ident->entid [db [op e a v :as orig]]
   ;; We have to handle all ops, including those when a or v are not defined.
   (let [e (db/entid db e)
         a (db/entid db a)
@@ -127,8 +135,8 @@
             (db/entid db v))]
     (when (and a (not (integer? a)))
       (raise "Unknown attribute " a
-             {:form orig :attribute a}))
-    [op e a v tx]))
+             {:form orig :attribute a :entity orig}))
+    [op e a v]))
 
 (defrecord Transaction [db tempids entities])
 
@@ -250,49 +258,43 @@
       ;; Extract the current txInstant for the report.
       (->> (update-txInstant db*)))))
 
-(defn- lookup-ref? [x]
-  "Return `x` if `x` is like [:attr value], false otherwise."
-  (and (sequential? x)
-       (= (count x) 2)
-       (or (keyword? (first x))
-           (integer? (first x)))
-       x))
-
 (defn <resolve-lookup-refs [db report]
   {:pre [(db/db? db) (report? report)]}
 
-  (let [entities (:entities report)]
-    ;; TODO: meta.
+  (let [unique-identity? (memoize (partial ds/unique-identity? (db/schema db)))
+        ;; Map lookup-ref -> entities containing lookup-ref, like {[[:a :v] [[[:a :v] :b :w] ...]] ...}.
+        groups           (group-by (partial keep db/lookup-ref?) (:entities report))
+        ;; Entities with no lookup-ref are grouped under the key (lazy-seq).
+        entities         (get groups (lazy-seq)) ;; No lookup-refs? Pass through.
+        to-resolve       (dissoc groups (lazy-seq)) ;; The ones with lookup-refs.
+        ;; List [[:a :v] ...] to lookup.
+        avs              (set (map (juxt :a :v) (apply concat (keys to-resolve))))
+        ->av             (fn [r] ;; Conditional (juxt :a :v) that passes through nil.
+                           (when r [(:a r) (:v r)]))]
     (go-pair
-      (if (empty? entities)
-        report
-        (assoc-in
-          report [:entities]
-          ;; We can't use `for` because go-pair doesn't traverse function boundaries.
-          ;; Apologies for the tortured nested loop.
-          (loop [[op & entity] (first entities)
-                 next (rest entities)
-                 acc []]
-            (if (nil? op)
-              acc
-              (recur (first next)
-                     (rest next)
-                     (conj acc
-                           (loop [field (first entity)
-                                  rem (rest entity)
-                                  acc [op]]
-                             (if (nil? field)
-                               acc
-                               (recur (first rem)
-                                      (rest rem)
-                                      (conj acc
-                                            (if-let [[a v] (lookup-ref? field)]
-                                              (or
-                                                ;; The lookup might fail! If so, throw.
-                                                (:e (<? (db/<av db a v)))
-                                                (raise "No entity found with attr " a " and val " v "."
-                                                       {:a a :v v}))
-                                              field))))))))))))))
+      (let [av->e    (<? (db/<avs db avs))
+            resolve1 (fn [field]
+                       (if-let [[a v] (->av (db/lookup-ref? field))]
+                         (if-not (unique-identity? (db/entid db a))
+                           (raise "Lookup-ref found with non-unique-identity attribute " a " and value " v
+                                  {:error :transact/lookup-ref-with-non-unique-identity-attribute
+                                   :a     a
+                                   :v     v})
+                           (or
+                             (get av->e [a v])
+                             (raise "No entity found for lookup-ref with attribute " a " and value " v
+                                    {:error :transact/lookup-ref-not-found
+                                     :a     a
+                                     :v     v})))
+                         field))
+            resolve  (fn [entity]
+                       (mapv resolve1 entity))]
+        (assoc
+          report
+          :entities
+          (concat
+            entities
+            (map resolve (apply concat (vals to-resolve)))))))))
 
 (declare <resolve-id-literals)
 
@@ -566,4 +568,51 @@
       #(go-pair
          (let [report (<? (<with db tx-data))]
            (reset! (:current-db conn) (:db-after report))
+           (a/put! (:listener-source conn) report)
            report)))))
+
+(defn listen-chan!
+  ([conn listener-sink]
+   {:pre [(conn? conn)]}
+   (listen-chan! conn (swap! (:listener-counter conn) inc) listener-sink))
+  ([conn key listener-sink]
+   {:pre [(conn? conn)]}
+   ;; Neither CLJ nor CLJS expose an unblocking predicate on the channel; hence, internals.
+   (when-not (a/unblocking-buffer? (#?(:cljs .-buf :clj .buf) listener-sink))
+     (raise "Listener sinks must be channels backed by unblocking buffers"
+            {:error :transact/bad-listener :listener-sink listener-sink}))
+   (swap! (:listener-chans conn) assoc key listener-sink)
+   (a/tap (:listener-mult conn) listener-sink)
+   key))
+
+(defn- -listen-chan [f]
+  (let [c (a/chan (a/sliding-buffer 1))]
+    (go-loop []
+      (if-let [v (<! c)]
+        (do
+          (f v)
+          (recur))
+        nil))
+    c))
+
+(defn listen!
+  ([conn f]
+   {:pre [(fn? f)]}
+   (listen-chan! conn (-listen-chan f)))
+  ([conn key f]
+   {:pre [(fn? f)]}
+   (listen-chan! conn key (-listen-chan f))))
+
+(defn unlisten! [conn key]
+  {:pre [(conn? conn)]} 
+  ;; There's a data race here, between the find and the dissoc below.  It's safe to untap the same
+  ;; channel multiple times and to dissoc the same key multiple times, so unlisten! racers are okay.
+  ;; It's when listen! and unlisten! race to update the same key that problems may occur.  In CLJS,
+  ;; our main target, there's only a single thread of control, so this can't happen.  Let's ignore
+  ;; this race for now; in the future, we could use refs and the CLJ STM to avoid it entirely.
+  (if-let [entry (find @(:listener-chans conn) key)]
+    (a/untap (:listener-mult conn) (val entry)))
+  (swap! (:listener-chans conn) dissoc key))
+
+;; For consistency: {un}listen!, {un}listen-chan!.
+(def unlisten-chan! unlisten!)

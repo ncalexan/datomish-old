@@ -87,6 +87,12 @@
     :db/cardinality :db.cardinality/one}
    {:db/id (d/id-literal :db.part/user)
     :db.install/_attribute :db.part/db
+    :db/ident :page/save
+    :db/valueType :db.type/ref
+    :db/unique :db.unique/identity            ; A save uniquely identifies a page.
+    :db/cardinality :db.cardinality/many}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
     :db/ident :page/starred
     :db/valueType :db.type/boolean
     :db/cardinality :db.cardinality/one}])
@@ -108,6 +114,26 @@
     :db/ident :foo/visitedAt
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/many}])
+
+(def save-schema
+  [{:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/string
+    :db/fulltext true
+    :db/ident :save/title}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/string
+    :db/fulltext true
+    :db/ident :save/excerpt}
+   {:db/id (d/id-literal :db.part/user)
+    :db.install/_attribute :db.part/db
+    :db/cardinality :db.cardinality/one
+    :db/valueType :db.type/string
+    :db/fulltext true
+    :db/ident :save/content}])
 
 (def schema-with-page
   (concat
@@ -418,6 +444,60 @@
                  [?entity :page/loves ?page])]
              conn)))))
 
+(deftest-db test-complex-or conn
+  (let [attrs (<? (<initialize-with-schema
+                    conn
+                    (concat save-schema schema-with-page)))]
+    (is (= {:select '([:datoms0.e :page] [:datoms0.v :starred]),
+            :modifiers [:distinct],
+            :where (list :and
+                         [:= :datoms0.a (:page/starred attrs)]
+                         [:= :datoms0.e :orjoin1.page])
+            :from
+            [[:datoms 'datoms0]
+             [{:union
+               (list
+                 ;; These first two will be merged together when
+                 ;; we implement simple pattern alternation within
+                 ;; complex `or`.
+                 {:from '([:datoms datoms2]),
+                  :select '([:datoms2.e :page]),
+                  :where (list :and
+                               [:= :datoms2.a (:page/url attrs)]
+                               [:= :datoms0.e :datoms2.e]
+                               [:= (sql/param :s) :datoms2.v])}
+                 {:from '([:datoms datoms3]),
+                  :select '([:datoms3.e :page]),
+                  :where (list :and
+                               [:= :datoms3.a (:page/title attrs)]
+                               [:= :datoms0.e :datoms3.e]
+                               [:= (sql/param :s) :datoms3.v])}
+
+                 {:from '([:datoms datoms4]
+                          [:fulltext_datoms fulltext_datoms5]
+                          [:fulltext_datoms fulltext_datoms6]),
+                  :select '([:datoms4.e :page]),
+                  :where (list :and
+                               [:= :datoms4.a (:page/save attrs)]
+                               [:= :fulltext_datoms5.a (:save/excerpt attrs)]
+                               [:= :fulltext_datoms6.a (:save/content attrs)]
+                               [:= :datoms4.v :fulltext_datoms5.e]
+                               [:= :datoms4.v :fulltext_datoms6.e]
+                               [:= :fulltext_datoms5.v :fulltext_datoms6.v]
+                               [:= :datoms0.e :datoms4.e]
+                               [:= (sql/param :s) :fulltext_datoms5.v])})}
+              'orjoin1]]}
+           (expand
+             '[:find ?page ?starred :in $ ?s :where
+               [?page :page/starred ?starred]
+               (or-join [?page]
+                 [?page :page/url ?s]
+                 [?page :page/title ?s]
+                 (and [?page :page/save ?saved]
+                      [?saved :save/excerpt ?s]
+                      [?saved :save/content ?s]))]
+             conn)))))
+
 (defn tag-clauses [column input]
   (let [codes (cc/->tag-codes input)]
     (if (= 1 (count codes))
@@ -567,3 +647,40 @@
             (query/options-into-context context 10 [[:date :asc]]))
           [:order-by :limit]
           )))))
+
+(deftest-db test-parsing-fulltext conn
+  (let [attrs (<? (<initialize-with-schema conn save-schema))]
+    (is (= {:select (list [:datoms1.e :save]),
+            :modifiers [:distinct],
+            :from (list [:fulltext_values 'fulltext_values0]
+                        [:datoms 'datoms1]),
+            :where (list :and
+                         [:match :fulltext_values0.fulltext_values "something"]
+                         [:= :datoms1.v :fulltext_values0.rowid]
+                         [:= :datoms1.a (:save/title attrs)])}
+           (expand {:find '[?save]
+                    :in '[$]
+                    :where [[(list 'fulltext
+                                   '$
+                                   :save/title
+                                   "something")
+                             '[[?save]]]]}
+                  conn)))
+    (is (= {:select (list [:datoms1.e :save]),
+            :modifiers [:distinct],
+            :from (list [:fulltext_values 'fulltext_values0]
+                        [:datoms 'datoms1]),
+            :where (list :and
+                         [:match :fulltext_values0.fulltext_values "something"]
+                         [:= :datoms1.v :fulltext_values0.rowid]
+                         (list :or
+                               [:= :datoms1.a (:save/title attrs)]
+                               [:= :datoms1.a (:save/excerpt attrs)]))}
+           (expand {:find '[?save]
+                    :in '[$]
+                    :where [[(list 'fulltext
+                                   '$
+                                   #{:save/title :save/excerpt}
+                                   "something")
+                             '[[?save]]]]}
+                  conn)))))
