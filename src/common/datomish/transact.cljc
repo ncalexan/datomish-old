@@ -6,7 +6,7 @@
   #?(:cljs
      (:require-macros
       [datomish.pair-chan :refer [go-pair <?]]
-      [cljs.core.async.macros :refer [go]]))
+      [cljs.core.async.macros :refer [go go-loop]]))
   (:require
    [datomish.query.context :as context]
    [datomish.query.projection :as projection]
@@ -25,7 +25,7 @@
    [taoensso.tufte :as tufte
     #?(:cljs :refer-macros :clj :refer) [defnp p profiled profile]]
    #?@(:clj [[datomish.pair-chan :refer [go-pair <?]]
-             [clojure.core.async :as a :refer [chan go <! >!]]])
+             [clojure.core.async :as a :refer [chan go go-loop <! >!]]])
    #?@(:cljs [[datomish.pair-chan]
               [cljs.core.async :as a :refer [chan <! >!]]]))
   #?(:clj
@@ -45,7 +45,9 @@
     [conn]
     "Get the full transaction history DB associated with this connection."))
 
-(defrecord Connection [current-db]
+;; (defrecord Listeners
+
+(defrecord Connection [current-db listener-counter listener-source listener-mult listener-chans]
   IConnection
   (close [conn] (db/close-db @(:current-db conn)))
 
@@ -101,7 +103,13 @@
 ;; TODO: implement support for DB parts?
 
 (defn connection-with-db [db]
-  (map->Connection {:current-db (atom db)}))
+  (let [listener-source (a/chan (a/sliding-buffer 1))]
+    (map->Connection {:current-db       (atom db)
+                      :listener-counter (atom 12345)             ;; Easy-to-identify magic number.
+                      :listener-source  listener-source
+                      :listener-mult    (a/mult listener-source) ;; Just for tapping.
+                      :listener-chans   (atom {})
+                      })))
 
 ;; ;; TODO: persist max-tx and max-eid in SQLite.
 
@@ -560,4 +568,51 @@
       #(go-pair
          (let [report (<? (<with db tx-data))]
            (reset! (:current-db conn) (:db-after report))
+           (a/put! (:listener-source conn) report)
            report)))))
+
+(defn listen-chan!
+  ([conn listener-sink]
+   {:pre [(conn? conn)]}
+   (listen-chan! conn (swap! (:listener-counter conn) inc) listener-sink))
+  ([conn key listener-sink]
+   {:pre [(conn? conn)]}
+   ;; Neither CLJ nor CLJS expose an unblocking predicate on the channel; hence, internals.
+   (when-not (a/unblocking-buffer? (#?(:cljs .-buf :clj .buf) listener-sink))
+     (raise "Listener sinks must be channels backed by unblocking buffers"
+            {:error :transact/bad-listener :listener-sink listener-sink}))
+   (swap! (:listener-chans conn) assoc key listener-sink)
+   (a/tap (:listener-mult conn) listener-sink)
+   key))
+
+(defn- -listen-chan [f]
+  (let [c (a/chan (a/sliding-buffer 1))]
+    (go-loop []
+      (if-let [v (<! c)]
+        (do
+          (f v)
+          (recur))
+        nil))
+    c))
+
+(defn listen!
+  ([conn f]
+   {:pre [(fn? f)]}
+   (listen-chan! conn (-listen-chan f)))
+  ([conn key f]
+   {:pre [(fn? f)]}
+   (listen-chan! conn key (-listen-chan f))))
+
+(defn unlisten! [conn key]
+  {:pre [(conn? conn)]} 
+  ;; There's a data race here, between the find and the dissoc below.  It's safe to untap the same
+  ;; channel multiple times and to dissoc the same key multiple times, so unlisten! racers are okay.
+  ;; It's when listen! and unlisten! race to update the same key that problems may occur.  In CLJS,
+  ;; our main target, there's only a single thread of control, so this can't happen.  Let's ignore
+  ;; this race for now; in the future, we could use refs and the CLJ STM to avoid it entirely.
+  (if-let [entry (find @(:listener-chans conn) key)]
+    (a/untap (:listener-mult conn) (val entry)))
+  (swap! (:listener-chans conn) dissoc key))
+
+;; For consistency: {un}listen!, {un}listen-chan!.
+(def unlisten-chan! unlisten!)
